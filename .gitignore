@@ -1,7 +1,13 @@
+# Build outputs
 bin/
 obj/
 dist/
-*.zip
+*.user
+.vs/
+
+# Local model files and packages — models ship in the GitHub Release, not in the repo
 modelos/
-prueba-onnx/bin/
-prueba-onnx/obj/
+*.zip
+
+# Local ONNX smoke-test harness
+prueba-onnx/

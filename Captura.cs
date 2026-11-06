@@ -35,7 +35,10 @@ public readonly record struct RectanguloPx(int X, int Y, int Ancho, int Alto);
 public static class Captura
 {
     private const int SRCCOPY = 0x00CC0020;
-    private const int CAPTUREBLT = 0x40000000; // incluye ventanas con capas (layered)
+    // Sin CAPTUREBLT a propósito: la capa de traducción es una ventana
+    // «layered» y así la captura del modo en vivo no se fotografía a sí
+    // misma (en la v1.0.0 la capa se quitaba antes de cada captura, pero
+    // en vivo eso parpadearía sin parar).
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetDC(IntPtr hWnd);
@@ -120,7 +123,7 @@ public static class Captura
         try
         {
             BitBlt(hdcMem, 0, 0, limites.Ancho, limites.Alto,
-                hdcPantalla, limites.X, limites.Y, SRCCOPY | CAPTUREBLT);
+                hdcPantalla, limites.X, limites.Y, SRCCOPY);
 
             BitmapSource origen = Imaging.CreateBitmapSourceFromHBitmap(
                 hBitmap, IntPtr.Zero, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
@@ -150,12 +153,23 @@ public static class Captura
         }
     }
 
-    /// <summary>Convierte la captura a SoftwareBitmap (BGRA8) para el motor OCR.</summary>
-    public static async Task<SoftwareBitmap> ASoftwareBitmapAsync(BitmapSource imagen)
+    /// <summary>
+    /// Convierte la captura a SoftwareBitmap (BGRA8) para el motor OCR.
+    /// Con <paramref name="factor"/> &gt; 1 la imagen se amplía antes:
+    /// el OCR reconoce así los signos pequeños que a tamaño natural
+    /// se pierde (viñetas, puntos, comillas).
+    /// </summary>
+    public static async Task<SoftwareBitmap> ASoftwareBitmapAsync(BitmapSource imagen, double factor = 1.0)
     {
+        BitmapSource fuente = imagen;
+        if (factor > 1.01)
+        {
+            fuente = new TransformedBitmap(imagen, new ScaleTransform(factor, factor));
+        }
+
         // PNG en memoria con el codificador de WPF…
         var codificador = new PngBitmapEncoder();
-        codificador.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(imagen));
+        codificador.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(fuente));
         using var memoria = new MemoryStream();
         codificador.Save(memoria);
         memoria.Position = 0;

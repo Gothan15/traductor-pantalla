@@ -19,7 +19,11 @@ red.
    La ventana de control se oculta un instante, se captura la pantalla, se
    reconoce el texto, se traduce y aparece la traducción pintada encima de
    cada texto, en su sitio.
-4. Para quitar la capa: **`Ctrl+Alt+T`** otra vez, la tecla **`Esc`** o el
+4. Si marcas **«Modo en vivo»**, la traducción deja de ser una foto fija:
+   la capa **sigue el scroll** (se mueve con el contenido en cuanto
+   ruedas el ratón) y **retraduce sola** cuando la pantalla cambia, sin
+   que pulses nada. La ventana de control queda oculta mientras dura.
+5. Para quitar la capa: **`Ctrl+Alt+T`** otra vez, la tecla **`Esc`** o el
    botón **«Quitar traducción»**.
 5. La capa es transparente a los clics (*click-through*): puedes seguir
    trabajando en la aplicación de debajo como si no estuviera.
@@ -32,13 +36,28 @@ Si falta la carpeta del modelo de la dirección elegida, la ventana lo dice
 - **Captura** de cada monitor con GDI (BitBlt), en píxeles físicos reales.
 - **OCR local** con el motor integrado de Windows (`Windows.Media.Ocr`):
   el texto se reconoce en tu PC, sin conexión y sin claves.
-- Las líneas reconocidas se **agrupan en bloques** (párrafos) y se traducen
-  **en local** con un modelo neuronal **Opus-MT** ejecutado con
-  **ONNX Runtime**: tokenizador SentencePiece (unigram) propio, encoder una
-  vez por bloque y decoder voraz con caché de claves/valores.
+- Antes del OCR, la captura se **amplía** cuando es pequeña: el motor de
+  Windows se traga los signos chicos (viñetas, puntos, comillas) a tamaño
+  natural. Las líneas reconocidas se **agrupan en bloques** (párrafos;
+  cada renglón de lista va por su lado) y se traducen **en local** con un
+  modelo neuronal **Opus-MT** ejecutado con **ONNX Runtime**:
+  tokenizador SentencePiece (unigram) propio, encoder una vez por bloque
+  y decoder voraz con caché de claves/valores. La **viñeta o el número**
+  de cada renglón de lista se separa antes de traducir y se vuelve a
+  pintar tal cual, para que no se pierda por el camino.
 - Cada bloque traducido se pinta en una **ventana transparente por monitor**
   que tapa el texto original con un recuadro del color de fondo muestreado
-  alrededor del texto, y escribe la traducción encima con un tamaño acorde.
+  alrededor del texto. El **tamaño** de la letra se estima de la altura
+  real de las líneas, el **color** se muestrea de los píxeles de las
+  propias letras y la **negrita** se adivina por la cantidad de tinta;
+  la fuente es «Segoe UI», la de la interfaz de Windows. Si la traducción
+  no cabe, la letra se encoge un poco o la caja se ensancha, antes que
+  cortar el texto.
+- En **modo en vivo**, un bucle captura la pantalla cada poco: estima el
+  desplazamiento entre capturas para **mover la capa con el scroll** al
+  instante y repite el OCR solo cuando la pantalla ha cambiado, con una
+  caché de traducciones para no recalcular lo ya visto. La capa se
+  excluye de las capturas para no traducirse a sí misma.
 
 ## Los modelos
 
@@ -60,8 +79,19 @@ Si falta la carpeta del modelo de la dirección elegida, la ventana lo dice
 - Ningún programa puede reescribir lo que otra aplicación dibuja: el efecto
   se logra **pintando encima**, con el fondo muestreado. Si el fondo es una
   foto o un degradado complejo, el recuadro se notará.
-- La traducción es una **foto fija** de la pantalla: si el contenido se mueve
-  (vídeo, scroll, juegos), hay que retraducir con el atajo.
+- Sin el modo en vivo, la traducción es una **foto fija** de la pantalla:
+  si el contenido se mueve (vídeo, scroll, juegos), hay que retraducir
+  con el atajo. El modo en vivo sigue el scroll y los cambios, pero con
+  el ritmo del OCR (segundos, no fotogramas): en un vídeo o un juego
+  seguirá viéndose entrecortado.
+- La fuente original de cada texto **no se puede saber** a partir de los
+  píxeles: se estima el tamaño, el color y la negrita y se pinta con
+  «Segoe UI». En la mayoría de programas de Windows el parecido es
+  grande, pero no es la fuente idéntica letra a letra.
+- Hay signos que dependen del OCR de Windows: si el motor no llega a
+  «ver» una viñeta muy pequeña o con poco contraste, ningún programa
+  que lo use podría recuperarla. La ampliación previa ayuda, no hace
+  milagros.
 - Los juegos en **pantalla completa exclusiva** pueden salir negros en la
   captura; en modo ventana o ventana sin bordes funciona.
 - Solo traduce entre los idiomas incluidos (inglés y español). La calidad

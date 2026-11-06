@@ -7,18 +7,34 @@ namespace TraductorPantalla;
 
 /// <summary>
 /// Ventana de control: elige la dirección, lanza la traducción y quita la capa.
-/// El ciclo completo es: ocultar esta ventana → capturar cada monitor →
-/// OCR local de Windows → agrupar en bloques → traducir con el modelo
-/// Opus-MT local (ONNX, sin red) → pintar la capa.
+/// El ciclo es: capturar cada monitor → OCR local de Windows → agrupar en
+/// bloques → traducir con el modelo Opus-MT local (ONNX, sin red) → pintar
+/// la capa.
+///
+/// Dos modos:
+/// - Foto (el de la v1.0.0): una captura, una capa quieta.
+/// - En vivo (v1.1): un bucle que vigila la pantalla. Si el contenido se
+///   desplaza (scroll), mueve la capa con él al instante estimando el
+///   desplazamiento entre capturas; si la pantalla cambia, repite el OCR
+///   y retraduce solo lo nuevo (lo ya traducido sale de la caché del
+///   motor, sin recalcular). La ventana de control se oculta mientras
+///   dura; se sale con Ctrl+Alt+T o Esc.
 /// </summary>
 public partial class MainWindow : Window
 {
-    private readonly List<OverlayWindow> _capas = new();
+    private readonly Dictionary<int, OverlayWindow> _capaPorMonitor = new();
     private OcrEngine? _motorOcr;
     private string? _direccionMotorOcr;
     private bool _ocupado;
     private bool _escapeRegistrado;
     private IntPtr _hwnd;
+
+    // Estado del modo en vivo.
+    private CancellationTokenSource? _vivoCts;
+    private bool _enVivo;
+    private readonly Dictionary<int, PantallaCapturada> _capturaAnterior = new();
+    private readonly Dictionary<int, byte[]> _huellaDeLoPintado = new();
+    private readonly Dictionary<int, long> _ultimoOcrMs = new();
 
     public MainWindow()
     {
@@ -34,6 +50,7 @@ public partial class MainWindow : Window
         };
         Closed += (_, _) =>
         {
+            _vivoCts?.Cancel();
             Atajos.UnregisterHotKey(_hwnd, Atajos.ID_ALTERNAR);
             DesregistrarEscape();
         };
@@ -85,7 +102,7 @@ public partial class MainWindow : Window
 
     private void Alternar()
     {
-        if (_capas.Count > 0) QuitarCapas();
+        if (_enVivo || _capaPorMonitor.Count > 0) QuitarCapas();
         else _ = TraducirAsync();
     }
 
@@ -93,13 +110,23 @@ public partial class MainWindow : Window
 
     private void QuitarCapas(bool actualizarEstado = true)
     {
-        foreach (var capa in _capas) capa.Close();
-        _capas.Clear();
+        bool eraVivo = _enVivo;
+        _enVivo = false;
+        _vivoCts?.Cancel();
+        _vivoCts = null;
+
+        foreach (var capa in _capaPorMonitor.Values) capa.Close();
+        _capaPorMonitor.Clear();
+        _capturaAnterior.Clear();
+        _huellaDeLoPintado.Clear();
+        _ultimoOcrMs.Clear();
         DesregistrarEscape();
-        if (actualizarEstado) PonerEstado("Listo");
+
+        if (eraVivo && !IsVisible) Show();
+        if (actualizarEstado) PonerEstado(eraVivo ? "Modo en vivo detenido" : "Listo");
     }
 
-    // ---------- Traducción ----------
+    // ---------- Preparación compartida ----------
 
     /// <summary>Dirección elegida: «en-es» o «es-en» (también es el nombre de la carpeta del modelo).</summary>
     private string Direccion =>
@@ -107,33 +134,91 @@ public partial class MainWindow : Window
 
     private void PonerEstado(string texto) => Estado.Text = texto;
 
+    /// <summary>
+    /// Comprueba el modelo y deja listo el motor OCR en el idioma de
+    /// origen. Devuelve null si todo va bien, o el mensaje de error.
+    /// </summary>
+    private string? Preparar(string direccion)
+    {
+        if (!TraductorOffline.ModeloDisponible(direccion))
+        {
+            return $"Falta el modelo {direccion}: no está en la carpeta modelos";
+        }
+        if (_motorOcr is null || _direccionMotorOcr != direccion)
+        {
+            _motorOcr = Ocr.CrearMotor(direccion == "es-en" ? "es-ES" : "en-US");
+            _direccionMotorOcr = direccion;
+        }
+        if (_motorOcr is null)
+        {
+            return "Error: Windows no tiene ningún idioma de OCR instalado. " +
+                   "Instala uno en Configuración → Hora e idioma → Idioma (opciones de OCR).";
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// OCR + agrupación + traducción de UNA captura ya hecha, y pinta o
+    /// actualiza la capa de ese monitor. Devuelve cuántos textos pinta.
+    /// </summary>
+    private async Task<int> ProcesarCapturaAsync(
+        int indiceMonitor, PantallaCapturada pantalla, string direccion,
+        CancellationToken token)
+    {
+        double factor = Ocr.FactorAmpliacion(pantalla.AnchoPx, pantalla.AltoPx);
+        using var softwareBitmap = await Captura.ASoftwareBitmapAsync(pantalla.Imagen, factor);
+        var lineas = await Ocr.ReconocerAsync(_motorOcr!, softwareBitmap, factor);
+        var bloques = Agrupador.Agrupar(lineas);
+
+        if (bloques.Count == 0)
+        {
+            if (_capaPorMonitor.TryGetValue(indiceMonitor, out var capaVacia))
+            {
+                capaVacia.Actualizar(pantalla,
+                    Array.Empty<(Bloque Bloque, string Traduccion)>());
+            }
+            return 0;
+        }
+
+        string[] traducciones = await TraductorOffline.TraducirBloquesAsync(
+            bloques.Select(b => b.Texto).ToArray(), direccion);
+        if (token.IsCancellationRequested) return 0;
+
+        var textos = bloques.Zip(traducciones, (b, t) => (b, t)).ToList();
+        if (_capaPorMonitor.TryGetValue(indiceMonitor, out var capa))
+        {
+            capa.Actualizar(pantalla, textos);
+        }
+        else
+        {
+            capa = new OverlayWindow(pantalla, textos);
+            capa.Mostrar();
+            _capaPorMonitor[indiceMonitor] = capa;
+        }
+        return textos.Count;
+    }
+
+    // ---------- Modo foto (una captura) ----------
+
     private async Task TraducirAsync()
     {
-        if (_ocupado) return;
+        if (_ocupado || _enVivo) return;
+
+        if (CheckVivo.IsChecked == true)
+        {
+            await IniciarVivoAsync();
+            return;
+        }
+
         _ocupado = true;
         QuitarCapas(actualizarEstado: false);
 
         try
         {
             string direccion = Direccion;
-
-            // Sin la carpeta del modelo no hay traducción que valga: se avisa y no se muestra capa.
-            if (!TraductorOffline.ModeloDisponible(direccion))
+            if (Preparar(direccion) is { } error)
             {
-                PonerEstado($"Falta el modelo {direccion}: no está en la carpeta modelos");
-                return;
-            }
-
-            // El OCR rinde mejor en el idioma de origen de la dirección.
-            if (_motorOcr is null || _direccionMotorOcr != direccion)
-            {
-                _motorOcr = Ocr.CrearMotor(direccion == "es-en" ? "es-ES" : "en-US");
-                _direccionMotorOcr = direccion;
-            }
-            if (_motorOcr is null)
-            {
-                PonerEstado("Error: Windows no tiene ningún idioma de OCR instalado. " +
-                            "Instala uno en Configuración → Hora e idioma → Idioma (opciones de OCR).");
+                PonerEstado(error);
                 return;
             }
 
@@ -142,43 +227,22 @@ public partial class MainWindow : Window
             Hide();
             await Task.Delay(200);
 
-            var porPantalla = new List<(PantallaCapturada Pantalla, List<Bloque> Bloques)>();
-            int totalBloques = 0;
-            foreach (var (limites, escala) in Captura.Monitores())
+            int mostrados = 0;
+            var monitores = Captura.Monitores();
+            for (int i = 0; i < monitores.Count; i++)
             {
-                var pantalla = Captura.Capturar(limites, escala);
-
-                PonerEstado("Reconociendo texto…");
-                using var softwareBitmap = await Captura.ASoftwareBitmapAsync(pantalla.Imagen);
-                var lineas = await Ocr.ReconocerAsync(_motorOcr, softwareBitmap);
-                var bloques = Agrupador.Agrupar(lineas);
-
-                porPantalla.Add((pantalla, bloques));
-                totalBloques += bloques.Count;
+                var pantalla = Captura.Capturar(monitores[i].Limites, monitores[i].Escala);
+                PonerEstado("Reconociendo y traduciendo…");
+                mostrados += await ProcesarCapturaAsync(i, pantalla, direccion, CancellationToken.None);
             }
 
             Show();
             Activate();
 
-            if (totalBloques == 0)
+            if (mostrados == 0)
             {
                 PonerEstado("No se encontró texto en la pantalla.");
                 return;
-            }
-
-            PonerEstado("Traduciendo…");
-            int mostrados = 0;
-            foreach (var (pantalla, bloques) in porPantalla)
-            {
-                if (bloques.Count == 0) continue;
-                string[] traducciones = await TraductorOffline.TraducirBloquesAsync(
-                    bloques.Select(b => b.Texto).ToArray(), direccion);
-
-                var textos = bloques.Zip(traducciones, (b, t) => (b, t)).ToList();
-                var capa = new OverlayWindow(pantalla, textos);
-                capa.Mostrar();
-                _capas.Add(capa);
-                mostrados += textos.Count;
             }
 
             RegistrarEscape();
@@ -200,6 +264,98 @@ public partial class MainWindow : Window
         finally
         {
             _ocupado = false;
+        }
+    }
+
+    // ---------- Modo en vivo ----------
+
+    private async Task IniciarVivoAsync()
+    {
+        string direccion = Direccion;
+        if (Preparar(direccion) is { } error)
+        {
+            PonerEstado(error);
+            return;
+        }
+
+        _enVivo = true;
+        _vivoCts = new CancellationTokenSource();
+        var token = _vivoCts.Token;
+        RegistrarEscape();
+
+        // La ventana de control se oculta mientras dura el modo en vivo:
+        // si no, saldría en las capturas y se traduciría a sí misma.
+        Hide();
+
+        bool primera = true;
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                var monitores = Captura.Monitores();
+                for (int i = 0; i < monitores.Count && !token.IsCancellationRequested; i++)
+                {
+                    // Si Windows no excluyó la capa de las capturas, se
+                    // oculta solo durante el BitBlt (milisegundos) para
+                    // que la captura no la incluya.
+                    bool tapar = !OverlayWindow.ExcluidaDeCaptura && _capaPorMonitor.Count > 0;
+                    if (tapar) foreach (var c in _capaPorMonitor.Values) c.Hide();
+                    var pantalla = Captura.Capturar(monitores[i].Limites, monitores[i].Escala);
+                    if (tapar) foreach (var c in _capaPorMonitor.Values) c.Show();
+
+                    // ¿Scroll? La capa se mueve con el contenido al
+                    // instante, sin esperar al OCR.
+                    if (_capturaAnterior.TryGetValue(i, out var previa)
+                        && previa.AnchoPx == pantalla.AnchoPx && previa.AltoPx == pantalla.AltoPx
+                        && _capaPorMonitor.TryGetValue(i, out var capaScroll))
+                    {
+                        int dy = EstimadorDesplazamiento.Estimar(
+                            previa.Bgra, pantalla.Bgra,
+                            pantalla.AnchoPx, pantalla.AltoPx, pantalla.Stride);
+                        if (dy != 0) capaScroll.Desplazar(dy);
+                    }
+                    _capturaAnterior[i] = pantalla;
+
+                    // ¿Cambió la pantalla respecto a lo último pintado?
+                    var huella = EstimadorDesplazamiento.Huella(
+                        pantalla.Bgra, pantalla.AnchoPx, pantalla.AltoPx, pantalla.Stride);
+                    bool cambio = !_huellaDeLoPintado.TryGetValue(i, out var huellaPintada)
+                                  || EstimadorDesplazamiento.Diferencia(huella, huellaPintada) > 0.015;
+                    bool esperaCumplida = !_ultimoOcrMs.TryGetValue(i, out var ultimo)
+                                          || Environment.TickCount64 - ultimo >= 450;
+
+                    if (cambio && (primera || esperaCumplida))
+                    {
+                        await ProcesarCapturaAsync(i, pantalla, direccion, token);
+                        _huellaDeLoPintado[i] = huella;
+                        _ultimoOcrMs[i] = Environment.TickCount64;
+                    }
+                }
+                primera = false;
+                await Task.Delay(130, token);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Salida normal del modo en vivo.
+        }
+        catch (Exception ex)
+        {
+            QuitarCapas(actualizarEstado: false);
+            if (!IsVisible) Show();
+            PonerEstado("Error en el modo en vivo: " + MensajeCorto(ex));
+            return;
+        }
+
+        // Si se salió con Ctrl+Alt+T o Esc, QuitarCapas ya volvió a
+        // mostrar la ventana; si se cerró la app, esto no debe reventar.
+        try
+        {
+            if (!IsVisible && _enVivo) Show();
+        }
+        catch (InvalidOperationException)
+        {
+            // La ventana ya estaba cerrada.
         }
     }
 
