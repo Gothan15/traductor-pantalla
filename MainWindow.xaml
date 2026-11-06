@@ -1,0 +1,25 @@
+<Window x:Class="TraductorPantalla.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Traductor de pantalla"
+        Width="360" Height="320"
+        ResizeMode="CanMinimize"
+        WindowStartupLocation="CenterScreen">
+    <StackPanel Margin="14">
+        <TextBlock Text="Dirección de traducción" FontWeight="SemiBold" />
+        <ComboBox x:Name="ComboDireccion" Margin="0,4,0,10" SelectedIndex="0">
+            <ComboBoxItem Content="Inglés → Español" Tag="en-es" />
+            <ComboBoxItem Content="Español → Inglés" Tag="es-en" />
+        </ComboBox>
+
+        <Button x:Name="BotonTraducir" Content="Traducir pantalla" Height="34"
+                Click="BotonTraducir_Click" />
+        <Button x:Name="BotonQuitar" Content="Quitar traducción" Height="30" Margin="0,8,0,0"
+                Click="BotonQuitar_Click" />
+
+        <TextBlock x:Name="Estado" Text="Listo" Margin="0,12,0,0" TextWrapping="Wrap" />
+
+        <TextBlock Text="Atajo global: Ctrl+Alt+T traduce o quita la capa. Con la capa visible, Esc también la quita."
+                   Margin="0,10,0,0" TextWrapping="Wrap" Foreground="Gray" FontSize="11" />
+    </StackPanel>
+</Window>

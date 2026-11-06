@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- Este TFM da acceso directo a WinRT (Windows.Media.Ocr) sin paquetes extra. -->
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <!-- WinForms solo se usa para System.Windows.Forms.Screen (lista de monitores). -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <!-- Permite compilar un proyecto de Windows desde Linux. -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- La misma conciencia DPI también como propiedad del proyecto. -->
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <AssemblyName>TraductorPantalla</AssemblyName>
+    <RootNamespace>TraductorPantalla</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Ejecutor ONNX para los modelos Opus-MT locales. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.22.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- La prueba de humo es un proyecto aparte: fuera de los globs de este. -->
+    <Compile Remove="prueba-onnx\**" />
+    <None Remove="prueba-onnx\**" />
+    <Content Remove="prueba-onnx\**" />
+    <Page Remove="prueba-onnx\**" />
+    <!-- Los modelos van junto al exe conservando su estructura de carpetas
+         (modelos\en-es\..., modelos\es-en\...). -->
+    <None Remove="modelos\**" />
+    <Content Include="modelos\**\*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
